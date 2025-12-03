@@ -63,6 +63,10 @@ class VoronoiEngine {
     var colorMode: ColorMode = .category
     var showLabels = true
     var animateTransitions = true
+    var categoryFilter: VoronoiCell.CellCategory?
+    var labelScale: Double = 1.0
+    var showCenters = true
+    var borderThickness: Double = 2.0
     
     enum SizeMode: String, CaseIterable {
         case importance = "Importance"
@@ -179,29 +183,34 @@ struct VoronoiTessellationView: View {
             Divider()
             
             GeometryReader { geo in
-                ZStack {
-                    // Stained glass background
-                    stainedGlassBackground
-                    
-                    // Voronoi cells
-                    Canvas { context, size in
-                        drawVoronoiCells(context: context, size: size)
+                TimelineView(.animation) { timeline in
+                    let time = timeline.date.timeIntervalSinceReferenceDate
+
+                    ZStack {
+                        // Stained glass background
+                        stainedGlassBackground
+
+                        // Voronoi cells
+                        Canvas { context, size in
+                            drawVoronoiCells(context: context, size: size, time: time)
+                            rippleOverlay(context: context, time: time)
+                        }
+                        .gesture(tapGesture(in: geo.size))
+
+                        // Labels overlay
+                        if engine.showLabels {
+                            labelsOverlay
+                        }
                     }
-                    .gesture(tapGesture(in: geo.size))
-                    
-                    // Labels overlay
-                    if engine.showLabels {
-                        labelsOverlay
+                    .onAppear {
+                        viewSize = geo.size
+                        engine.loadSampleData()
+                        engine.generateVoronoi(in: geo.size)
                     }
-                }
-                .onAppear {
-                    viewSize = geo.size
-                    engine.loadSampleData()
-                    engine.generateVoronoi(in: geo.size)
-                }
-                .onChange(of: geo.size) { _, newSize in
-                    viewSize = newSize
-                    engine.generateVoronoi(in: newSize)
+                    .onChange(of: geo.size) { _, newSize in
+                        viewSize = newSize
+                        engine.generateVoronoi(in: newSize)
+                    }
                 }
             }
             
@@ -228,8 +237,12 @@ struct VoronoiTessellationView: View {
     
     // MARK: - Drawing
     
-    private func drawVoronoiCells(context: GraphicsContext, size: CGSize) {
-        for cell in engine.cells {
+    private func drawVoronoiCells(context: GraphicsContext, size: CGSize, time: TimeInterval) {
+        let visibleCells = engine.cells.filter { cell in
+            engine.categoryFilter == nil || cell.category == engine.categoryFilter
+        }
+
+        for cell in visibleCells {
             guard cell.vertices.count >= 3 else { continue }
             
             // Create cell path
@@ -253,23 +266,38 @@ struct VoronoiTessellationView: View {
             case .custom:
                 fillColor = cell.color
             }
-            
+
+            let shimmer = 0.05 * sin(time * 0.9 + Double(cell.center.x + cell.center.y) * 0.02)
+            let breathing = 1 + 0.06 * sin(time * 1.2 + Double(cell.importance) * 4)
+
             let isSelected = engine.selectedCell?.id == cell.id
             let isHovered = engine.hoveredCell?.id == cell.id
-            
+
             // Fill
             context.fill(
                 path,
                 with: .color(fillColor.opacity(isSelected ? 0.9 : (isHovered ? 0.7 : 0.5)))
             )
-            
+
+            context.fill(
+                path,
+                with: .linearGradient(
+                    Gradient(colors: [
+                        fillColor.opacity(0.18 + shimmer),
+                        fillColor.opacity(0.45 * breathing)
+                    ]),
+                    startPoint: cell.center,
+                    endPoint: CGPoint(x: cell.center.x + 40, y: cell.center.y + 40)
+                )
+            )
+
             // Border (stained glass lead)
             context.stroke(
                 path,
                 with: .color(.black.opacity(0.8)),
-                lineWidth: isSelected ? 3 : 2
+                lineWidth: (isSelected ? engine.borderThickness + 1 : engine.borderThickness) * (0.95 + breathing * 0.1)
             )
-            
+
             // Inner glow for selected
             if isSelected {
                 context.stroke(
@@ -278,15 +306,44 @@ struct VoronoiTessellationView: View {
                     lineWidth: 1
                 )
             }
+
+            if engine.showCenters {
+                context.fill(
+                    Path(ellipseIn: CGRect(x: cell.center.x - 3, y: cell.center.y - 3, width: 6, height: 6)),
+                    with: .color(.white.opacity(0.8))
+                )
+            }
         }
+    }
+
+    private func rippleOverlay(context: GraphicsContext, time: TimeInterval) {
+        guard let selected = engine.selectedCell else { return }
+        let ripple = 1 + sin(time * 1.4) * 0.4
+        let radius = 14.0 * ripple
+
+        let ringRect = CGRect(
+            x: selected.center.x - radius,
+            y: selected.center.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        )
+
+        var ring = Path(ellipseIn: ringRect)
+        ring = ring.strokedPath(.init(lineWidth: 3, dash: [6, 10], dashPhase: CGFloat(time * 8)))
+
+        context.stroke(
+            ring,
+            with: .color(selected.color.opacity(0.4)),
+            lineWidth: 2
+        )
     }
     
     // MARK: - Labels Overlay
     
     private var labelsOverlay: some View {
-        ForEach(engine.cells) { cell in
+        ForEach(engine.cells.filter { engine.categoryFilter == nil || $0.category == engine.categoryFilter }) { cell in
             Text(cell.name)
-                .font(.caption2)
+                .font(.system(size: 10 * engine.labelScale))
                 .foregroundStyle(.white)
                 .shadow(color: .black, radius: 2)
                 .position(cell.center)
@@ -361,21 +418,51 @@ struct VoronoiTessellationView: View {
                 }
             }
             .frame(width: 100)
-            
+
             Toggle(isOn: $engine.showLabels) {
                 Label("Labels", systemImage: "textformat")
             }
             .toggleStyle(.button)
-            
+
+            Toggle(isOn: $engine.showCenters) {
+                Label("Centers", systemImage: "dot.circle")
+            }
+            .toggleStyle(.button)
+
             Spacer()
-            
+
             Button {
                 engine.generateVoronoi(in: viewSize)
             } label: {
                 Label("Regenerate", systemImage: "arrow.clockwise")
             }
             .buttonStyle(.bordered)
-            
+
+            Picker("Category", selection: Binding(
+                get: { engine.categoryFilter },
+                set: { engine.categoryFilter = $0 }
+            )) {
+                Text("All").tag(VoronoiCell.CellCategory?.none)
+                ForEach(VoronoiCell.CellCategory.allCases, id: \.self) { category in
+                    Text(category.rawValue).tag(VoronoiCell.CellCategory?.some(category))
+                }
+            }
+            .frame(width: 140)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Labels x\(String(format: "%.1f", engine.labelScale))")
+                    .font(.caption2)
+                Slider(value: $engine.labelScale, in: 0.8...2.0)
+                    .frame(width: 110)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Borders \(String(format: "%.1f", engine.borderThickness))")
+                    .font(.caption2)
+                Slider(value: $engine.borderThickness, in: 1...4)
+                    .frame(width: 110)
+            }
+
             Text("\(engine.cells.count) cells")
                 .font(.caption)
                 .foregroundStyle(.secondary)
