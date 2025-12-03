@@ -256,9 +256,9 @@ struct ConstellationView: View {
     @State private var searchQuery: String = ""
     @State private var showSpatialGrid = false
     @State private var emphasizeRecentChanges = true
-    @State private var showAuroraCurtains = true
-    @State private var showSolarLensFlares = true
-    @State private var showHorizonGlows = true
+    @State private var showAurora = true
+    @State private var showMeteorShower = true
+    @State private var showLensFlares = true
 
     private let timer = Timer.publish(every: 1/60, on: .main, in: .common).autoconnect()
 
@@ -270,6 +270,8 @@ struct ConstellationView: View {
             // 3D constellation
             GeometryReader { geo in
                 Canvas { context, size in
+                    if showAurora { drawAurora(context: context, size: size) }
+                    if showMeteorShower { drawMeteorShower(context: context, size: size) }
                     drawConstellation(context: context, size: size)
                     if showSpatialGrid {
                         drawGrid(context: context, size: size)
@@ -310,55 +312,6 @@ struct ConstellationView: View {
                 startPoint: .top,
                 endPoint: .bottom
             )
-
-            if showHorizonGlows {
-                Canvas { context, size in
-                    let sweep = Path { path in
-                        path.move(to: CGPoint(x: 0, y: size.height * 0.78))
-                        path.addCurve(
-                            to: CGPoint(x: size.width, y: size.height * 0.72),
-                            control1: CGPoint(x: size.width * 0.25, y: size.height * 0.6),
-                            control2: CGPoint(x: size.width * 0.65, y: size.height * 0.88)
-                        )
-                        path.addLine(to: CGPoint(x: size.width, y: size.height))
-                        path.addLine(to: CGPoint(x: 0, y: size.height))
-                        path.closeSubpath()
-                    }
-
-                    context.fill(
-                        sweep,
-                        with: .linearGradient(
-                            Gradient(colors: [
-                                Color.purple.opacity(0.28),
-                                Color.blue.opacity(0.04)
-                            ]),
-                            startPoint: CGPoint(x: 0, y: size.height * 0.55),
-                            endPoint: CGPoint(x: 0, y: size.height)
-                        )
-                    )
-
-                    let horizonGlow = Path(ellipseIn: CGRect(
-                        x: -size.width * 0.1,
-                        y: size.height * 0.68,
-                        width: size.width * 1.2,
-                        height: size.height * 0.6
-                    ))
-
-                    context.fill(
-                        horizonGlow,
-                        with: .radialGradient(
-                            Gradient(colors: [
-                                Color.cyan.opacity(0.18),
-                                Color.clear
-                            ]),
-                            center: CGPoint(x: size.width / 2, y: size.height * 0.9),
-                            startRadius: 0,
-                            endRadius: size.height * 0.5
-                        )
-                    )
-                }
-                .blur(radius: 36)
-            }
 
             // Nebula clouds
             ForEach(0..<3, id: \.self) { i in
@@ -503,33 +456,15 @@ struct ConstellationView: View {
             let pos1 = project3D(first.position, center: center, scale: scale, rotation: engine.cameraRotation)
             let pos2 = project3D(second.position, center: center, scale: scale, rotation: engine.cameraRotation)
 
-            let cometLinked = first.bodyType == .comet || second.bodyType == .comet
-            let pulse = 0.5 + 0.5 * sin(Double(engine.time) * (cometLinked ? 2.2 : 1.4) + Double(similarity * 4))
-            let hueColor: Color = cometLinked ? .orange : .white
-
             var path = Path()
             path.move(to: pos1)
             path.addLine(to: pos2)
 
             context.stroke(
                 path,
-                with: .linearGradient(
-                    Gradient(colors: [
-                        hueColor.opacity(Double(similarity - engine.connectionThreshold) * 0.3),
-                        hueColor.opacity(Double(similarity - engine.connectionThreshold) * (0.5 + pulse * 0.3))
-                    ]),
-                    startPoint: pos1,
-                    endPoint: pos2
-                ),
-                lineWidth: 0.5 + (cometLinked ? 0.35 : 0)
+                with: .color(.white.opacity(Double(similarity - engine.connectionThreshold) * 0.7)),
+                lineWidth: 0.5
             )
-
-            if cometLinked {
-                context.stroke(
-                    path.strokedPath(.init(lineWidth: 0.25, dash: [3, 9], dashPhase: CGFloat(engine.time) * 6)),
-                    with: .color(.orange.opacity(0.35))
-                )
-            }
         }
     }
     
@@ -567,52 +502,30 @@ struct ConstellationView: View {
                 )
             }
 
-            if showSolarLensFlares {
-                let flareColors: [Color] = [body.color.opacity(0.32), .white.opacity(0.18), body.color.opacity(0.08)]
-                let spokeCount = 12
-                for i in 0..<spokeCount {
-                    let angle = Double(i) / Double(spokeCount) * .pi * 2 + Double(engine.time) * 0.08
-                    let length = size * (2.2 + CGFloat(i % 3) * 0.4)
-                    var ray = Path()
-                    ray.move(to: screenPos)
-                    ray.addLine(to: CGPoint(
-                        x: screenPos.x + cos(angle) * length,
-                        y: screenPos.y + sin(angle) * length
-                    ))
+            if showLensFlares {
+                let flareColors: [Color] = [
+                    body.color.opacity(0.3),
+                    body.color.opacity(0.18),
+                    .white.opacity(0.12)
+                ]
+                for ray in 0..<6 {
+                    let angle = Double(ray) * .pi / 3 + Double(engine.time) * 0.2
+                    let rayLength = size * CGFloat(5 + ray)
+                    let dx = cos(angle) * Double(rayLength)
+                    let dy = sin(angle) * Double(rayLength)
+
+                    var rayPath = Path()
+                    rayPath.move(to: screenPos)
+                    rayPath.addLine(to: CGPoint(x: screenPos.x + dx, y: screenPos.y + dy))
+
                     context.stroke(
-                        ray,
+                        rayPath,
                         with: .linearGradient(
                             Gradient(colors: flareColors),
                             startPoint: screenPos,
-                            endPoint: CGPoint(
-                                x: screenPos.x + cos(angle) * length,
-                                y: screenPos.y + sin(angle) * length
-                            )
+                            endPoint: CGPoint(x: screenPos.x + dx * 0.8, y: screenPos.y + dy * 0.8)
                         ),
-                        lineWidth: 1.2
-                    )
-                }
-
-                let flareDiamonds = 6
-                for i in 0..<flareDiamonds {
-                    let radius = size * (1.2 + CGFloat(i) * 0.5)
-                    let opacity = 0.28 - Double(i) * 0.04
-                    let rotation = CGFloat(engine.time) * 0.3 + CGFloat(i) * 0.5
-                    var diamond = Path()
-                    diamond.addRoundedRect(in: CGRect(
-                        x: screenPos.x - radius,
-                        y: screenPos.y - radius * 0.24,
-                        width: radius * 2,
-                        height: radius * 0.48
-                    ), cornerSize: CGSize(width: 12, height: 12))
-                    diamond = diamond
-                        .applying(.init(translationX: -screenPos.x, y: -screenPos.y))
-                        .applying(.init(rotationAngle: rotation))
-                        .applying(.init(translationX: screenPos.x, y: screenPos.y))
-                    context.stroke(
-                        diamond,
-                        with: .color(body.color.opacity(opacity)),
-                        lineWidth: 0.8
+                        style: StrokeStyle(lineWidth: size * 0.08, lineCap: .round)
                     )
                 }
             }
@@ -870,18 +783,18 @@ struct ConstellationView: View {
             }
             .toggleStyle(.button)
 
-            Toggle(isOn: $showAuroraCurtains) {
-                Label("Aurora", systemImage: "wind")
+            Toggle(isOn: $showAurora) {
+                Label("Aurora", systemImage: "burst")
             }
             .toggleStyle(.button)
 
-            Toggle(isOn: $showSolarLensFlares) {
-                Label("Flares", systemImage: "sun.max")
+            Toggle(isOn: $showMeteorShower) {
+                Label("Meteors", systemImage: "meteor")
             }
             .toggleStyle(.button)
 
-            Toggle(isOn: $showHorizonGlows) {
-                Label("Horizon", systemImage: "circle.bottomhalf.fill")
+            Toggle(isOn: $showLensFlares) {
+                Label("Lens", systemImage: "sun.dust")
             }
             .toggleStyle(.button)
 
@@ -945,6 +858,74 @@ struct ConstellationView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(.ultraThinMaterial)
+    }
+
+    private func drawAurora(context: GraphicsContext, size: CGSize) {
+        let baseTime = Double(engine.time)
+        let bandCount = 3
+        for band in 0..<bandCount {
+            let hueShift = Double(band) * 0.18
+            let amplitude = 60 + CGFloat(band) * 18
+            let yBase = size.height * (0.18 + CGFloat(band) * 0.14)
+            let phase = baseTime * 0.35 + Double(band) * 0.8
+            var ribbon = Path()
+
+            for step in 0...20 {
+                let progress = Double(step) / 20.0
+                let x = size.width * progress
+                let wave = sin(phase + progress * 10) * cos(phase * 0.6 + progress * 6)
+                let y = yBase + CGFloat(wave) * amplitude
+                if step == 0 {
+                    ribbon.move(to: CGPoint(x: x, y: y))
+                } else {
+                    ribbon.addLine(to: CGPoint(x: x, y: y))
+                }
+            }
+
+            context.drawLayer { layer in
+                layer.addFilter(.blur(radius: 18))
+                layer.stroke(
+                    ribbon,
+                    with: .linearGradient(
+                        Gradient(colors: [
+                            Color(hue: 0.6 + hueShift, saturation: 0.7, brightness: 0.9, opacity: 0.35),
+                            Color(hue: 0.45 + hueShift, saturation: 0.9, brightness: 1.0, opacity: 0.15)
+                        ]),
+                        startPoint: .zero,
+                        endPoint: CGPoint(x: size.width, y: yBase + amplitude)
+                    ),
+                    lineWidth: 26
+                )
+            }
+        }
+    }
+
+    private func drawMeteorShower(context: GraphicsContext, size: CGSize) {
+        let baseTime = Double(engine.time)
+        for i in 0..<10 {
+            let progress = (baseTime * 0.08 + Double(i) * 0.11).truncatingRemainder(dividingBy: 1)
+            let startX = size.width * (1 - progress) + CGFloat(i * 10)
+            let startY = size.height * (0.1 + CGFloat(progress) * 0.7)
+            let tailLength: CGFloat = 140
+            let endPoint = CGPoint(x: startX - tailLength, y: startY - tailLength * 0.35)
+
+            var path = Path()
+            path.move(to: CGPoint(x: startX, y: startY))
+            path.addLine(to: endPoint)
+
+            context.stroke(
+                path,
+                with: .linearGradient(
+                    Gradient(colors: [
+                        Color.white.opacity(0.75 * (1 - progress)),
+                        Color.blue.opacity(0.2)
+                    ]),
+                    startPoint: CGPoint(x: startX, y: startY),
+                    endPoint: endPoint
+                ),
+                style: StrokeStyle(lineWidth: 2, lineCap: .round)
+            )
+        }
     }
     
     private func bodyDetailPanel(_ body: CelestialBody) -> some View {
