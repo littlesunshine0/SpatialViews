@@ -256,6 +256,9 @@ struct ConstellationView: View {
     @State private var searchQuery: String = ""
     @State private var showSpatialGrid = false
     @State private var emphasizeRecentChanges = true
+    @State private var showAurora = true
+    @State private var showMeteorShower = true
+    @State private var showLensFlares = true
 
     private let timer = Timer.publish(every: 1/60, on: .main, in: .common).autoconnect()
 
@@ -267,6 +270,8 @@ struct ConstellationView: View {
             // 3D constellation
             GeometryReader { geo in
                 Canvas { context, size in
+                    if showAurora { drawAurora(context: context, size: size) }
+                    if showMeteorShower { drawMeteorShower(context: context, size: size) }
                     drawConstellation(context: context, size: size)
                     if showSpatialGrid {
                         drawGrid(context: context, size: size)
@@ -425,6 +430,60 @@ struct ConstellationView: View {
         
         let isSelected = engine.selectedBody?.id == body.id
         let isHovered = engine.hoveredBody?.id == body.id
+
+        if body.bodyType == .sun {
+            let pulse = 1 + 0.08 * sin(Double(engine.time) * 0.8)
+            let coronaRadius = size * 2 * pulse
+
+            for ring in 0..<3 {
+                let ringSize = coronaRadius + CGFloat(ring) * size * 0.6
+                var ringPath = Path(ellipseIn: CGRect(
+                    x: screenPos.x - ringSize / 2,
+                    y: screenPos.y - ringSize / 2,
+                    width: ringSize,
+                    height: ringSize
+                ))
+                ringPath = ringPath.strokedPath(.init(lineWidth: CGFloat(1 + ring), dash: [6, 10], dashPhase: CGFloat(engine.time) * CGFloat(4 + ring)))
+                context.stroke(
+                    ringPath,
+                    with: .radialGradient(
+                        Gradient(colors: [body.color.opacity(0.2), .clear]),
+                        center: screenPos,
+                        startRadius: 0,
+                        endRadius: ringSize / 2
+                    ),
+                    lineWidth: CGFloat(1 + ring)
+                )
+            }
+
+            if showLensFlares {
+                let flareColors: [Color] = [
+                    body.color.opacity(0.3),
+                    body.color.opacity(0.18),
+                    .white.opacity(0.12)
+                ]
+                for ray in 0..<6 {
+                    let angle = Double(ray) * .pi / 3 + Double(engine.time) * 0.2
+                    let rayLength = size * CGFloat(5 + ray)
+                    let dx = cos(angle) * Double(rayLength)
+                    let dy = sin(angle) * Double(rayLength)
+
+                    var rayPath = Path()
+                    rayPath.move(to: screenPos)
+                    rayPath.addLine(to: CGPoint(x: screenPos.x + dx, y: screenPos.y + dy))
+
+                    context.stroke(
+                        rayPath,
+                        with: .linearGradient(
+                            Gradient(colors: flareColors),
+                            startPoint: screenPos,
+                            endPoint: CGPoint(x: screenPos.x + dx * 0.8, y: screenPos.y + dy * 0.8)
+                        ),
+                        style: StrokeStyle(lineWidth: size * 0.08, lineCap: .round)
+                    )
+                }
+            }
+        }
 
         // Glow
         let glowRadius = size * (body.bodyType == .sun ? 3 : (isSelected ? 2.5 : 1.5))
@@ -678,6 +737,21 @@ struct ConstellationView: View {
             }
             .toggleStyle(.button)
 
+            Toggle(isOn: $showAurora) {
+                Label("Aurora", systemImage: "burst")
+            }
+            .toggleStyle(.button)
+
+            Toggle(isOn: $showMeteorShower) {
+                Label("Meteors", systemImage: "meteor")
+            }
+            .toggleStyle(.button)
+
+            Toggle(isOn: $showLensFlares) {
+                Label("Lens", systemImage: "sun.dust")
+            }
+            .toggleStyle(.button)
+
             Spacer()
 
             HStack(spacing: 8) {
@@ -738,6 +812,74 @@ struct ConstellationView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(.ultraThinMaterial)
+    }
+
+    private func drawAurora(context: GraphicsContext, size: CGSize) {
+        let baseTime = Double(engine.time)
+        let bandCount = 3
+        for band in 0..<bandCount {
+            let hueShift = Double(band) * 0.18
+            let amplitude = 60 + CGFloat(band) * 18
+            let yBase = size.height * (0.18 + CGFloat(band) * 0.14)
+            let phase = baseTime * 0.35 + Double(band) * 0.8
+            var ribbon = Path()
+
+            for step in 0...20 {
+                let progress = Double(step) / 20.0
+                let x = size.width * progress
+                let wave = sin(phase + progress * 10) * cos(phase * 0.6 + progress * 6)
+                let y = yBase + CGFloat(wave) * amplitude
+                if step == 0 {
+                    ribbon.move(to: CGPoint(x: x, y: y))
+                } else {
+                    ribbon.addLine(to: CGPoint(x: x, y: y))
+                }
+            }
+
+            context.drawLayer { layer in
+                layer.addFilter(.blur(radius: 18))
+                layer.stroke(
+                    ribbon,
+                    with: .linearGradient(
+                        Gradient(colors: [
+                            Color(hue: 0.6 + hueShift, saturation: 0.7, brightness: 0.9, opacity: 0.35),
+                            Color(hue: 0.45 + hueShift, saturation: 0.9, brightness: 1.0, opacity: 0.15)
+                        ]),
+                        startPoint: .zero,
+                        endPoint: CGPoint(x: size.width, y: yBase + amplitude)
+                    ),
+                    lineWidth: 26
+                )
+            }
+        }
+    }
+
+    private func drawMeteorShower(context: GraphicsContext, size: CGSize) {
+        let baseTime = Double(engine.time)
+        for i in 0..<10 {
+            let progress = (baseTime * 0.08 + Double(i) * 0.11).truncatingRemainder(dividingBy: 1)
+            let startX = size.width * (1 - progress) + CGFloat(i * 10)
+            let startY = size.height * (0.1 + CGFloat(progress) * 0.7)
+            let tailLength: CGFloat = 140
+            let endPoint = CGPoint(x: startX - tailLength, y: startY - tailLength * 0.35)
+
+            var path = Path()
+            path.move(to: CGPoint(x: startX, y: startY))
+            path.addLine(to: endPoint)
+
+            context.stroke(
+                path,
+                with: .linearGradient(
+                    Gradient(colors: [
+                        Color.white.opacity(0.75 * (1 - progress)),
+                        Color.blue.opacity(0.2)
+                    ]),
+                    startPoint: CGPoint(x: startX, y: startY),
+                    endPoint: endPoint
+                ),
+                style: StrokeStyle(lineWidth: 2, lineCap: .round)
+            )
+        }
     }
     
     private func bodyDetailPanel(_ body: CelestialBody) -> some View {
