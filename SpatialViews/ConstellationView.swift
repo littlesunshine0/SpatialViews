@@ -354,6 +354,52 @@ struct ConstellationView: View {
                     )
                 }
             }
+
+            if showAuroraCurtains {
+                Canvas { context, size in
+                    let time = engine.time
+                    for band in 0..<3 {
+                        var path = Path()
+                        let baseY = size.height * (0.15 + CGFloat(band) * 0.08)
+                        path.move(to: CGPoint(x: -size.width * 0.1, y: baseY))
+
+                        let segments = 14
+                        for i in 0...segments {
+                            let progress = CGFloat(i) / CGFloat(segments)
+                            let x = size.width * (progress * 1.2 - 0.1)
+                            let undulation = sin(progress * 8 + CGFloat(time) * (0.6 + CGFloat(band) * 0.15))
+                            let y = baseY + undulation * 30 + cos(CGFloat(time) * 0.4 + progress * 6) * 18
+                            path.addLine(to: CGPoint(x: x, y: y))
+                        }
+
+                        path.addLine(to: CGPoint(x: size.width * 1.1, y: size.height * 0.05))
+                        path.addLine(to: CGPoint(x: -size.width * 0.1, y: size.height * 0.05))
+                        path.closeSubpath()
+
+                        let colors: [Color] = band == 0 ? [.cyan, .mint, .blue] : band == 1 ? [.purple, .blue, .mint] : [.pink, .purple, .blue]
+                        context.fill(
+                            path,
+                            with: .linearGradient(
+                                Gradient(colors: colors.map { $0.opacity(0.16) } + [Color.clear]),
+                                startPoint: CGPoint(x: size.width / 2, y: 0),
+                                endPoint: CGPoint(x: size.width / 2, y: size.height * 0.4)
+                            )
+                        )
+
+                        context.stroke(
+                            path.offsetBy(dx: 0, dy: 6),
+                            with: .linearGradient(
+                                Gradient(colors: colors.map { $0.opacity(0.35) }),
+                                startPoint: CGPoint(x: 0, y: 0),
+                                endPoint: CGPoint(x: size.width, y: size.height * 0.25)
+                            ),
+                            lineWidth: 1.2
+                        )
+                    }
+                }
+                .blendMode(.screen)
+                .opacity(0.75)
+            }
         }
         .ignoresSafeArea()
     }
