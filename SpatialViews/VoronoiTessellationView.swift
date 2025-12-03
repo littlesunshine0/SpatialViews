@@ -63,6 +63,10 @@ class VoronoiEngine {
     var colorMode: ColorMode = .category
     var showLabels = true
     var animateTransitions = true
+    var categoryFilter: VoronoiCell.CellCategory?
+    var labelScale: Double = 1.0
+    var showCenters = true
+    var borderThickness: Double = 2.0
     
     enum SizeMode: String, CaseIterable {
         case importance = "Importance"
@@ -229,7 +233,11 @@ struct VoronoiTessellationView: View {
     // MARK: - Drawing
     
     private func drawVoronoiCells(context: GraphicsContext, size: CGSize) {
-        for cell in engine.cells {
+        let visibleCells = engine.cells.filter { cell in
+            engine.categoryFilter == nil || cell.category == engine.categoryFilter
+        }
+
+        for cell in visibleCells {
             guard cell.vertices.count >= 3 else { continue }
             
             // Create cell path
@@ -267,7 +275,7 @@ struct VoronoiTessellationView: View {
             context.stroke(
                 path,
                 with: .color(.black.opacity(0.8)),
-                lineWidth: isSelected ? 3 : 2
+                lineWidth: isSelected ? engine.borderThickness + 1 : engine.borderThickness
             )
             
             // Inner glow for selected
@@ -278,15 +286,22 @@ struct VoronoiTessellationView: View {
                     lineWidth: 1
                 )
             }
+
+            if engine.showCenters {
+                context.fill(
+                    Path(ellipseIn: CGRect(x: cell.center.x - 3, y: cell.center.y - 3, width: 6, height: 6)),
+                    with: .color(.white.opacity(0.8))
+                )
+            }
         }
     }
     
     // MARK: - Labels Overlay
     
     private var labelsOverlay: some View {
-        ForEach(engine.cells) { cell in
+        ForEach(engine.cells.filter { engine.categoryFilter == nil || $0.category == engine.categoryFilter }) { cell in
             Text(cell.name)
-                .font(.caption2)
+                .font(.system(size: 10 * engine.labelScale))
                 .foregroundStyle(.white)
                 .shadow(color: .black, radius: 2)
                 .position(cell.center)
@@ -361,21 +376,51 @@ struct VoronoiTessellationView: View {
                 }
             }
             .frame(width: 100)
-            
+
             Toggle(isOn: $engine.showLabels) {
                 Label("Labels", systemImage: "textformat")
             }
             .toggleStyle(.button)
-            
+
+            Toggle(isOn: $engine.showCenters) {
+                Label("Centers", systemImage: "dot.circle")
+            }
+            .toggleStyle(.button)
+
             Spacer()
-            
+
             Button {
                 engine.generateVoronoi(in: viewSize)
             } label: {
                 Label("Regenerate", systemImage: "arrow.clockwise")
             }
             .buttonStyle(.bordered)
-            
+
+            Picker("Category", selection: Binding(
+                get: { engine.categoryFilter },
+                set: { engine.categoryFilter = $0 }
+            )) {
+                Text("All").tag(VoronoiCell.CellCategory?.none)
+                ForEach(VoronoiCell.CellCategory.allCases, id: \.self) { category in
+                    Text(category.rawValue).tag(VoronoiCell.CellCategory?.some(category))
+                }
+            }
+            .frame(width: 140)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Labels x\(String(format: "%.1f", engine.labelScale))")
+                    .font(.caption2)
+                Slider(value: $engine.labelScale, in: 0.8...2.0)
+                    .frame(width: 110)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Borders \(String(format: "%.1f", engine.borderThickness))")
+                    .font(.caption2)
+                Slider(value: $engine.borderThickness, in: 1...4)
+                    .frame(width: 110)
+            }
+
             Text("\(engine.cells.count) cells")
                 .font(.caption)
                 .foregroundStyle(.secondary)
