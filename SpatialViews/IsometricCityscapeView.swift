@@ -65,6 +65,10 @@ class CityscapeEngine {
     var showGrid = true
     var showLabels = true
     var timeOfDay: TimeOfDay = .day
+    var heightMultiplier: CGFloat = 1.0
+    var fogDensity: Double = 0.0
+    var showBeacons = true
+    var districtFilter: String? = nil
     
     enum ColorMode: String, CaseIterable {
         case category = "Category"
@@ -140,7 +144,7 @@ struct IsometricCityscapeView: View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            
+
             ZStack {
                 // Sky gradient
                 LinearGradient(
@@ -149,16 +153,29 @@ struct IsometricCityscapeView: View {
                     endPoint: .bottom
                 )
                 .ignoresSafeArea()
-                
+
                 // City canvas
                 GeometryReader { geo in
-                    Canvas { context, size in
-                        drawCity(context: context, size: size)
+                    TimelineView(.animation) { timeline in
+                        let time = timeline.date.timeIntervalSinceReferenceDate
+
+                        ZStack {
+                            movingClouds(time: time, size: geo.size)
+
+                            Canvas { context, size in
+                                drawCity(context: context, size: size, time: time)
+                                drawTraffic(context: context, size: size, time: time)
+                            }
+                            .gesture(dragGesture)
+                            .gesture(magnificationGesture)
+
+                            aerialLightSweep(time: time, size: geo.size)
+                        }
                     }
-                    .gesture(dragGesture)
-                    .gesture(magnificationGesture)
                 }
-                
+
+                fogOverlay
+
                 // Building info overlay
                 if let selected = engine.selectedBuilding {
                     buildingInfoCard(selected)
@@ -176,24 +193,32 @@ struct IsometricCityscapeView: View {
     
     // MARK: - Drawing
     
-    private func drawCity(context: GraphicsContext, size: CGSize) {
-        let centerX = size.width / 2 + engine.panOffset.width
-        let centerY = size.height / 2 + engine.panOffset.height
+    private func drawCity(context: GraphicsContext, size: CGSize, time: TimeInterval) {
+        let driftX = sin(time * 0.05) * 4
+        let driftY = cos(time * 0.06) * 6
+        let centerX = size.width / 2 + engine.panOffset.width + driftX
+        let centerY = size.height / 2 + engine.panOffset.height + driftY
         let tileWidth: CGFloat = 40 * engine.zoom
         let tileHeight: CGFloat = 20 * engine.zoom
-        
+
+        let activeDistricts = engine.districtFilter == nil ? engine.districts : engine.districts.filter { $0.name == engine.districtFilter }
+        let activeBuildings = engine.buildings.filter { building in
+            guard let districtName = districtName(for: building) else { return engine.districtFilter == nil }
+            return engine.districtFilter == nil || districtName == engine.districtFilter
+        }
+
         // Draw ground grid
         if engine.showGrid {
             drawGrid(context: context, centerX: centerX, centerY: centerY, tileWidth: tileWidth, tileHeight: tileHeight)
         }
-        
+
         // Draw districts
-        for district in engine.districts {
+        for district in activeDistricts {
             drawDistrict(district, context: context, centerX: centerX, centerY: centerY, tileWidth: tileWidth, tileHeight: tileHeight)
         }
-        
+
         // Sort buildings by position for proper depth
-        let sortedBuildings = engine.buildings.sorted { b1, b2 in
+        let sortedBuildings = activeBuildings.sorted { b1, b2 in
             let sum1 = b1.gridPosition.x + b1.gridPosition.y
             let sum2 = b2.gridPosition.x + b2.gridPosition.y
             return sum1 < sum2
@@ -201,8 +226,69 @@ struct IsometricCityscapeView: View {
         
         // Draw buildings
         for building in sortedBuildings {
-            drawBuilding(building, context: context, centerX: centerX, centerY: centerY, tileWidth: tileWidth, tileHeight: tileHeight)
+            drawBuilding(building, context: context, centerX: centerX, centerY: centerY, tileWidth: tileWidth, tileHeight: tileHeight, time: time)
         }
+    }
+
+    private func drawTraffic(context: GraphicsContext, size: CGSize, time: TimeInterval) {
+        let driftX = sin(time * 0.05) * 4
+        let driftY = cos(time * 0.06) * 6
+        let centerX = size.width / 2 + engine.panOffset.width + driftX
+        let centerY = size.height / 2 + engine.panOffset.height + driftY
+        let tileWidth: CGFloat = 40 * engine.zoom
+        let tileHeight: CGFloat = 20 * engine.zoom
+
+        let phase = CGFloat(time.truncatingRemainder(dividingBy: 20)) * 12
+        let primaryColor = Color.orange.opacity(0.25)
+        let secondaryColor = Color.yellow.opacity(0.18)
+
+        for lane in stride(from: 0, through: 9, by: 2) {
+            let start = isoToScreen(x: 0, y: lane, centerX: centerX, centerY: centerY, tileWidth: tileWidth, tileHeight: tileHeight)
+            let end = isoToScreen(x: 10, y: lane, centerX: centerX, centerY: centerY, tileWidth: tileWidth, tileHeight: tileHeight)
+
+            var path = Path()
+            path.move(to: start)
+            path.addLine(to: end)
+
+            context.stroke(
+                path,
+                with: .linearGradient(
+                    Gradient(colors: [secondaryColor, primaryColor, .clear]),
+                    startPoint: start,
+                    endPoint: end
+                ),
+                style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: [12, 28], dashPhase: phase)
+            )
+        }
+    }
+
+    private func movingClouds(time: TimeInterval, size: CGSize) -> some View {
+        let offset = CGFloat(sin(time * 0.04) * 40)
+        return ZStack {
+            ForEach(0..<4, id: \.self) { idx in
+                Capsule()
+                    .fill(Color.white.opacity(0.06))
+                    .frame(width: 260, height: 80)
+                    .blur(radius: 40)
+                    .offset(x: offset + CGFloat(idx * 120) - size.width * 0.5, y: CGFloat(-120 + idx * 30))
+            }
+        }
+    }
+
+    private func aerialLightSweep(time: TimeInterval, size: CGSize) -> some View {
+        let sweepX = (sin(time * 0.18) + 1) / 2 * size.width
+        return Rectangle()
+            .fill(
+                LinearGradient(
+                    colors: [Color.white.opacity(0.08), Color.white.opacity(0.0)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .frame(width: 220)
+            .rotationEffect(.degrees(-20))
+            .offset(x: sweepX - size.width / 2, y: -80)
+            .blendMode(.screen)
     }
     
     private func drawGrid(context: GraphicsContext, centerX: CGFloat, centerY: CGFloat, tileWidth: CGFloat, tileHeight: CGFloat) {
@@ -233,10 +319,10 @@ struct IsometricCityscapeView: View {
         context.draw(text, at: CGPoint(x: minPos.x, y: minPos.y - 20))
     }
     
-    private func drawBuilding(_ building: Building, context: GraphicsContext, centerX: CGFloat, centerY: CGFloat, tileWidth: CGFloat, tileHeight: CGFloat) {
+    private func drawBuilding(_ building: Building, context: GraphicsContext, centerX: CGFloat, centerY: CGFloat, tileWidth: CGFloat, tileHeight: CGFloat, time: TimeInterval) {
         let screenPos = isoToScreen(x: building.gridPosition.x, y: building.gridPosition.y, centerX: centerX, centerY: centerY, tileWidth: tileWidth, tileHeight: tileHeight)
         
-        let height = building.height * engine.zoom
+        let height = building.height * engine.zoom * engine.heightMultiplier
         let width = tileWidth * 0.8
         let depth = tileHeight * 0.8
         
@@ -255,8 +341,10 @@ struct IsometricCityscapeView: View {
             baseColor = Color(hue: 0.6 - sizeRatio * 0.4, saturation: 0.7, brightness: 0.8)
         }
         
-        let ambient = engine.timeOfDay.ambientLight
+        let ambient = engine.timeOfDay.ambientLight + 0.05 * sin(time * 0.5 + Double(building.gridPosition.x))
         let highlightMultiplier = isSelected ? 1.3 : (isHovered ? 1.15 : 1.0)
+
+        let facadeSweep = max(0, sin(time * 0.8 + Double(building.gridPosition.y))) * 0.2
         
         // Left face
         var leftPath = Path()
@@ -266,7 +354,7 @@ struct IsometricCityscapeView: View {
         leftPath.addLine(to: CGPoint(x: screenPos.x, y: screenPos.y))
         leftPath.closeSubpath()
         
-        context.fill(leftPath, with: .color(baseColor.opacity(0.7 * ambient * highlightMultiplier)))
+        context.fill(leftPath, with: .color(baseColor.opacity((0.7 + facadeSweep * 0.5) * ambient * highlightMultiplier)))
         
         // Right face
         var rightPath = Path()
@@ -276,7 +364,7 @@ struct IsometricCityscapeView: View {
         rightPath.addLine(to: CGPoint(x: screenPos.x, y: screenPos.y))
         rightPath.closeSubpath()
         
-        context.fill(rightPath, with: .color(baseColor.opacity(0.5 * ambient * highlightMultiplier)))
+        context.fill(rightPath, with: .color(baseColor.opacity((0.5 + facadeSweep * 0.4) * ambient * highlightMultiplier)))
         
         // Top face
         var topPath = Path()
@@ -286,7 +374,7 @@ struct IsometricCityscapeView: View {
         topPath.addLine(to: CGPoint(x: screenPos.x - width / 2, y: screenPos.y + depth / 2 - height))
         topPath.closeSubpath()
         
-        context.fill(topPath, with: .color(baseColor.opacity(0.9 * ambient * highlightMultiplier)))
+        context.fill(topPath, with: .color(baseColor.opacity((0.9 + facadeSweep * 0.3) * ambient * highlightMultiplier)))
         
         // Windows (night mode)
         if engine.timeOfDay == .night {
@@ -306,6 +394,19 @@ struct IsometricCityscapeView: View {
                     with: .color(.yellow.opacity(Double.random(in: 0.3...0.9)))
                 )
             }
+        }
+
+        if engine.showBeacons && building.ageInDays <= 10 {
+            let beaconPosition = CGPoint(x: screenPos.x, y: screenPos.y - height - 8)
+            context.fill(
+                Path(ellipseIn: CGRect(x: beaconPosition.x - 4, y: beaconPosition.y - 4, width: 8, height: 8)),
+                with: .color(.yellow.opacity(0.9))
+            )
+
+            var beamPath = Path()
+            beamPath.move(to: beaconPosition)
+            beamPath.addLine(to: CGPoint(x: beaconPosition.x, y: beaconPosition.y - 16))
+            context.stroke(beamPath, with: .color(.yellow.opacity(0.6)), lineWidth: 2)
         }
         
         // Label
@@ -331,6 +432,14 @@ struct IsometricCityscapeView: View {
             y: centerY + CGFloat(x + y) * tileHeight / 2
         )
     }
+
+    private func districtName(for building: Building) -> String? {
+        engine.districts.first {
+            let range = $0.gridRange
+            return building.gridPosition.x >= range.xMin && building.gridPosition.x <= range.xMax &&
+            building.gridPosition.y >= range.yMin && building.gridPosition.y <= range.yMax
+        }?.name
+    }
     
     // MARK: - Gestures
     
@@ -349,7 +458,7 @@ struct IsometricCityscapeView: View {
     }
     
     // MARK: - UI Components
-    
+
     private var toolbar: some View {
         HStack(spacing: 16) {
             HStack(spacing: 8) {
@@ -384,9 +493,41 @@ struct IsometricCityscapeView: View {
                 Label("Labels", systemImage: "textformat")
             }
             .toggleStyle(.button)
-            
+
+            Toggle(isOn: $engine.showBeacons) {
+                Label("Beacons", systemImage: "light.max")
+            }
+            .toggleStyle(.button)
+
             Spacer()
-            
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Height x\(String(format: "%.1f", engine.heightMultiplier))")
+                    .font(.caption2)
+                Slider(value: $engine.heightMultiplier, in: 0.5...2.5)
+                    .frame(width: 120)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Fog \(Int(engine.fogDensity * 100))%")
+                    .font(.caption2)
+                Slider(value: $engine.fogDensity, in: 0...0.6)
+                    .frame(width: 120)
+            }
+
+            Picker("District", selection: Binding(
+                get: { engine.districtFilter ?? "All" },
+                set: { newValue in
+                    engine.districtFilter = newValue == "All" ? nil : newValue
+                }
+            )) {
+                Text("All").tag("All")
+                ForEach(engine.districts.map(\.name), id: \.self) { district in
+                    Text(district).tag(district)
+                }
+            }
+            .frame(width: 140)
+
             Text("\(engine.buildings.count) buildings")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -394,6 +535,13 @@ struct IsometricCityscapeView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.regularMaterial)
+    }
+
+    private var fogOverlay: some View {
+        Color.black
+            .opacity(engine.fogDensity * (engine.timeOfDay == .night ? 0.6 : 0.35))
+            .blendMode(.softLight)
+            .allowsHitTesting(false)
     }
     
     private var legendBar: some View {
