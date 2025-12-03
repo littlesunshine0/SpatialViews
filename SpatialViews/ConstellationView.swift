@@ -426,32 +426,6 @@ struct ConstellationView: View {
         let isSelected = engine.selectedBody?.id == body.id
         let isHovered = engine.hoveredBody?.id == body.id
 
-        if body.bodyType == .sun {
-            let pulse = 1 + 0.08 * sin(Double(engine.time) * 0.8)
-            let coronaRadius = size * 2 * pulse
-
-            for ring in 0..<3 {
-                let ringSize = coronaRadius + CGFloat(ring) * size * 0.6
-                var ringPath = Path(ellipseIn: CGRect(
-                    x: screenPos.x - ringSize / 2,
-                    y: screenPos.y - ringSize / 2,
-                    width: ringSize,
-                    height: ringSize
-                ))
-                ringPath = ringPath.strokedPath(.init(lineWidth: CGFloat(1 + ring), dash: [6, 10], dashPhase: CGFloat(engine.time) * CGFloat(4 + ring)))
-                context.stroke(
-                    ringPath,
-                    with: .radialGradient(
-                        Gradient(colors: [body.color.opacity(0.2), .clear]),
-                        center: screenPos,
-                        startRadius: 0,
-                        endRadius: ringSize / 2
-                    ),
-                    lineWidth: CGFloat(1 + ring)
-                )
-            }
-        }
-
         // Glow
         let glowRadius = size * (body.bodyType == .sun ? 3 : (isSelected ? 2.5 : 1.5))
         let baseOpacity = engine.focusFilter == nil ? 1.0 : (body.bodyType == engine.focusFilter ? 1.0 : 0.15)
