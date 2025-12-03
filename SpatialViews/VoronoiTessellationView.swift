@@ -237,7 +237,7 @@ struct VoronoiTessellationView: View {
     
     // MARK: - Drawing
     
-    private func drawVoronoiCells(context: GraphicsContext, size: CGSize, time: TimeInterval) {
+    private func drawVoronoiCells(context: GraphicsContext, size: CGSize) {
         let visibleCells = engine.cells.filter { cell in
             engine.categoryFilter == nil || cell.category == engine.categoryFilter
         }
@@ -295,7 +295,7 @@ struct VoronoiTessellationView: View {
             context.stroke(
                 path,
                 with: .color(.black.opacity(0.8)),
-                lineWidth: (isSelected ? engine.borderThickness + 1 : engine.borderThickness) * (0.95 + breathing * 0.1)
+                lineWidth: isSelected ? engine.borderThickness + 1 : engine.borderThickness
             )
 
             // Inner glow for selected
