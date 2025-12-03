@@ -9,6 +9,7 @@
 
 import SwiftUI
 import Combine
+import Algorithms
 // MARK: - Celestial Body
 
 struct CelestialBody: Identifiable {
@@ -66,16 +67,36 @@ class ConstellationEngine {
     var cameraZoom: Float = 1.0
     var showOrbits = true
     var showConnections = true
+    var connectionThreshold: Float = 0.7
+    var autoRotate = true
+    var autoRotateSpeed: Float = 0.35
+    var focusFilter: CelestialBody.BodyType?
+    var showTrails = true
     var animationSpeed: Float = 1.0
     var time: Float = 0
+
+    struct ParallaxStar {
+        let position: CGPoint
+        let size: CGFloat
+        let baseOpacity: Double
+        let twinkleSpeed: Double
+        let parallaxDepth: CGFloat
+    }
+
+    var starfield: [ParallaxStar] = []
     
     var centralSun: CelestialBody? {
         bodies.first { $0.bodyType == .sun }
     }
-    
+
     func update(deltaTime: Float) {
         time += deltaTime * animationSpeed
-        
+
+        if autoRotate {
+            cameraRotation.y += autoRotateSpeed * deltaTime * 0.5
+            cameraRotation.x = min(max(cameraRotation.x, -.pi / 2.2), .pi / 2.2)
+        }
+
         for i in 0..<bodies.count {
             guard bodies[i].bodyType != .sun else { continue }
             
@@ -92,6 +113,9 @@ class ConstellationEngine {
     }
     
     func loadSampleData() {
+        if starfield.isEmpty {
+            generateStarfield()
+        }
         // Central project sun
         let sun = CelestialBody(
             name: "HIG Project",
@@ -206,6 +230,21 @@ class ConstellationEngine {
             bodies.append(body)
         }
     }
+
+    func generateStarfield(size: CGSize = CGSize(width: 1400, height: 900)) {
+        starfield = (0..<240).map { _ in
+            ParallaxStar(
+                position: CGPoint(
+                    x: CGFloat.random(in: 0...size.width),
+                    y: CGFloat.random(in: 0...size.height)
+                ),
+                size: CGFloat.random(in: 1...3),
+                baseOpacity: Double.random(in: 0.25...0.9),
+                twinkleSpeed: Double.random(in: 0.5...1.5),
+                parallaxDepth: CGFloat.random(in: 0.3...1.2)
+            )
+        }
+    }
 }
 
 // MARK: - Constellation View
@@ -214,18 +253,24 @@ struct ConstellationView: View {
     @State private var engine = ConstellationEngine()
     @State private var isDragging = false
     @State private var lastDragPosition: CGPoint = .zero
-    
+    @State private var searchQuery: String = ""
+    @State private var showSpatialGrid = false
+    @State private var emphasizeRecentChanges = true
+
     private let timer = Timer.publish(every: 1/60, on: .main, in: .common).autoconnect()
-    
+
     var body: some View {
         ZStack {
             // Space background
             spaceBackground
-            
+
             // 3D constellation
             GeometryReader { geo in
                 Canvas { context, size in
                     drawConstellation(context: context, size: size)
+                    if showSpatialGrid {
+                        drawGrid(context: context, size: size)
+                    }
                 }
                 .gesture(dragGesture)
                 .gesture(magnificationGesture)
@@ -257,8 +302,12 @@ struct ConstellationView: View {
     private var spaceBackground: some View {
         ZStack {
             // Deep space
-            Color.black
-            
+            LinearGradient(
+                colors: [Color.black, Color(red: 0.03, green: 0.02, blue: 0.08)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
             // Nebula clouds
             ForEach(0..<3, id: \.self) { i in
                 Circle()
@@ -280,18 +329,23 @@ struct ConstellationView: View {
                     )
                     .blur(radius: 80)
             }
-            
+
             // Stars
             Canvas { context, size in
-                for _ in 0..<200 {
-                    let x = CGFloat.random(in: 0...size.width)
-                    let y = CGFloat.random(in: 0...size.height)
-                    let starSize = CGFloat.random(in: 1...3)
-                    let opacity = Double.random(in: 0.3...1.0)
-                    
+                if engine.starfield.isEmpty { engine.generateStarfield(size: size) }
+
+                let driftX = sin(Double(engine.time) * 0.15) * 8
+                let driftY = cos(Double(engine.time) * 0.12) * 6
+
+                for star in engine.starfield {
+                    let parallax = 1 + star.parallaxDepth * 0.25
+                    let twinkle = star.baseOpacity + sin(Double(engine.time) * star.twinkleSpeed + Double(star.position.x) * 0.01) * 0.25
+                    let x = star.position.x + CGFloat(driftX) * star.parallaxDepth
+                    let y = star.position.y + CGFloat(driftY) * star.parallaxDepth
+
                     context.fill(
-                        Path(ellipseIn: CGRect(x: x, y: y, width: starSize, height: starSize)),
-                        with: .color(.white.opacity(opacity))
+                        Path(ellipseIn: CGRect(x: x, y: y, width: star.size * parallax, height: star.size * parallax)),
+                        with: .color(.white.opacity(max(0.05, min(1.0, twinkle))))
                     )
                 }
             }
@@ -304,10 +358,15 @@ struct ConstellationView: View {
     private func drawConstellation(context: GraphicsContext, size: CGSize) {
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
         let scale = CGFloat(engine.cameraZoom) * min(size.width, size.height) / 25
-        
+
+        let visibleBodies = engine.bodies.filter { body in
+            (engine.focusFilter == nil || body.bodyType == engine.focusFilter) &&
+            (searchQuery.isEmpty || body.name.lowercased().contains(searchQuery.lowercased()))
+        }
+
         // Draw orbits
         if engine.showOrbits {
-            for body in engine.bodies where body.bodyType != .sun {
+            for body in visibleBodies where body.bodyType != .sun {
                 let orbitRadius = CGFloat(body.orbitRadius) * scale
                 let orbitRect = CGRect(
                     x: center.x - orbitRadius,
@@ -323,41 +382,38 @@ struct ConstellationView: View {
                 )
             }
         }
-        
+
         // Draw connections
         if engine.showConnections {
-            drawConnections(context: context, center: center, scale: scale)
+            drawConnections(context: context, center: center, scale: scale, bodies: visibleBodies)
         }
-        
+
         // Draw bodies (sorted by z for depth)
-        let sortedBodies = engine.bodies.sorted { $0.position.z > $1.position.z }
+        let sortedBodies = visibleBodies.sorted { $0.position.z > $1.position.z }
         
         for body in sortedBodies {
             drawBody(body, context: context, center: center, scale: scale)
         }
     }
-    
-    private func drawConnections(context: GraphicsContext, center: CGPoint, scale: CGFloat) {
-        for body in engine.bodies {
-            let pos1 = project3D(body.position, center: center, scale: scale, rotation: engine.cameraRotation)
-            
-            // Find similar bodies by embedding
-            for other in engine.bodies where other.id != body.id {
-                let similarity = cosineSimilarity(body.embedding, other.embedding)
-                if similarity > 0.7 {
-                    let pos2 = project3D(other.position, center: center, scale: scale, rotation: engine.cameraRotation)
-                    
-                    var path = Path()
-                    path.move(to: pos1)
-                    path.addLine(to: pos2)
-                    
-                    context.stroke(
-                        path,
-                        with: .color(.white.opacity(Double(similarity - 0.7) * 0.5)),
-                        lineWidth: 0.5
-                    )
-                }
-            }
+
+    private func drawConnections(context: GraphicsContext, center: CGPoint, scale: CGFloat, bodies: [CelestialBody]) {
+        for pair in bodies.combinations(ofCount: 2) {
+            guard let first = pair.first, let second = pair.last else { continue }
+            let similarity = cosineSimilarity(first.embedding, second.embedding)
+            guard similarity >= engine.connectionThreshold else { continue }
+
+            let pos1 = project3D(first.position, center: center, scale: scale, rotation: engine.cameraRotation)
+            let pos2 = project3D(second.position, center: center, scale: scale, rotation: engine.cameraRotation)
+
+            var path = Path()
+            path.move(to: pos1)
+            path.addLine(to: pos2)
+
+            context.stroke(
+                path,
+                with: .color(.white.opacity(Double(similarity - engine.connectionThreshold) * 0.7)),
+                lineWidth: 0.5
+            )
         }
     }
     
@@ -369,9 +425,38 @@ struct ConstellationView: View {
         
         let isSelected = engine.selectedBody?.id == body.id
         let isHovered = engine.hoveredBody?.id == body.id
-        
+
+        if body.bodyType == .sun {
+            let pulse = 1 + 0.08 * sin(Double(engine.time) * 0.8)
+            let coronaRadius = size * 2 * pulse
+
+            for ring in 0..<3 {
+                let ringSize = coronaRadius + CGFloat(ring) * size * 0.6
+                var ringPath = Path(ellipseIn: CGRect(
+                    x: screenPos.x - ringSize / 2,
+                    y: screenPos.y - ringSize / 2,
+                    width: ringSize,
+                    height: ringSize
+                ))
+                ringPath = ringPath.strokedPath(.init(lineWidth: CGFloat(1 + ring), dash: [6, 10], dashPhase: CGFloat(engine.time) * CGFloat(4 + ring)))
+                context.stroke(
+                    ringPath,
+                    with: .radialGradient(
+                        Gradient(colors: [body.color.opacity(0.2), .clear]),
+                        center: screenPos,
+                        startRadius: 0,
+                        endRadius: ringSize / 2
+                    ),
+                    lineWidth: CGFloat(1 + ring)
+                )
+            }
+        }
+
         // Glow
         let glowRadius = size * (body.bodyType == .sun ? 3 : (isSelected ? 2.5 : 1.5))
+        let baseOpacity = engine.focusFilter == nil ? 1.0 : (body.bodyType == engine.focusFilter ? 1.0 : 0.15)
+        let nameMatches = searchQuery.isEmpty || body.name.lowercased().contains(searchQuery.lowercased())
+        let displayOpacity = nameMatches ? baseOpacity : 0.1
         context.fill(
             Path(ellipseIn: CGRect(
                 x: screenPos.x - glowRadius,
@@ -381,7 +466,7 @@ struct ConstellationView: View {
             )),
             with: .radialGradient(
                 Gradient(colors: [
-                    body.color.opacity(Double(body.brightness) * 0.6),
+                    body.color.opacity(Double(body.brightness) * 0.6 * displayOpacity),
                     body.color.opacity(0)
                 ]),
                 center: screenPos,
@@ -389,7 +474,33 @@ struct ConstellationView: View {
                 endRadius: glowRadius
             )
         )
-        
+
+        // Orbital motion trail
+        if engine.showTrails && body.bodyType != .sun {
+            let tailPhase = body.orbitPhase + max(0, engine.time - 0.8) * body.orbitSpeed
+            let tailRadius = body.orbitRadius
+            let tailPosition = SIMD3<Float>(
+                cos(tailPhase) * tailRadius,
+                sin(tailPhase * 0.3) * tailRadius * 0.2,
+                sin(tailPhase) * tailRadius
+            )
+
+            let tailScreen = project3D(tailPosition, center: center, scale: scale, rotation: engine.cameraRotation)
+            var trailPath = Path()
+            trailPath.move(to: tailScreen)
+            trailPath.addLine(to: screenPos)
+
+            context.stroke(
+                trailPath,
+                with: .linearGradient(
+                    Gradient(colors: [body.color.opacity(0.05), body.color.opacity(displayOpacity * 0.6)]),
+                    startPoint: tailScreen,
+                    endPoint: screenPos
+                ),
+                lineWidth: size * 0.12
+            )
+        }
+
         // Body
         context.fill(
             Path(ellipseIn: CGRect(
@@ -398,11 +509,11 @@ struct ConstellationView: View {
                 width: size,
                 height: size
             )),
-            with: .color(body.color)
+            with: .color(body.color.opacity(displayOpacity))
         )
-        
+
         // Comet tail
-        if body.bodyType == .comet {
+        if body.bodyType == .comet && engine.showTrails {
             var tailPath = Path()
             tailPath.move(to: screenPos)
             tailPath.addLine(to: CGPoint(
@@ -420,14 +531,49 @@ struct ConstellationView: View {
                 lineWidth: size * 0.5
             )
         }
+
+        if emphasizeRecentChanges && body.bodyType == .comet {
+            context.stroke(
+                Path(ellipseIn: CGRect(
+                    x: screenPos.x - size,
+                    y: screenPos.y - size,
+                    width: size * 2,
+                    height: size * 2
+                )),
+                with: .color(body.color.opacity(0.3)),
+                lineWidth: 1.5
+            )
+        }
         
         // Label
         if isHovered || isSelected || body.bodyType == .sun || body.bodyType == .planet {
             let text = Text(body.name)
                 .font(.system(size: 10 * CGFloat(depthScale)))
                 .foregroundColor(.white.opacity(Double(depthScale)))
-            
+
             context.draw(text, at: CGPoint(x: screenPos.x, y: screenPos.y + size + 10))
+        }
+    }
+
+    private func drawGrid(context: GraphicsContext, size: CGSize) {
+        let spacing: CGFloat = 120
+        let rows = Int(size.height / spacing)
+        let cols = Int(size.width / spacing)
+
+        for row in 0...rows {
+            let y = CGFloat(row) * spacing
+            var path = Path()
+            path.move(to: CGPoint(x: 0, y: y))
+            path.addLine(to: CGPoint(x: size.width, y: y))
+            context.stroke(path, with: .color(.white.opacity(0.05)), lineWidth: 0.5)
+        }
+
+        for col in 0...cols {
+            let x = CGFloat(col) * spacing
+            var path = Path()
+            path.move(to: CGPoint(x: x, y: 0))
+            path.addLine(to: CGPoint(x: x, y: size.height))
+            context.stroke(path, with: .color(.white.opacity(0.05)), lineWidth: 0.5)
         }
     }
     
@@ -470,6 +616,15 @@ struct ConstellationView: View {
         let denom = sqrt(normA) * sqrt(normB)
         return denom > 0 ? dot / denom : 0
     }
+
+    private func connectedBodies(to body: CelestialBody) -> [CelestialBody] {
+        engine.bodies
+            .filter { $0.id != body.id }
+            .map { ($0, cosineSimilarity($0.embedding, body.embedding)) }
+            .filter { $0.1 >= engine.connectionThreshold }
+            .sorted { $0.1 > $1.1 }
+            .map { $0.0 }
+    }
     
     // MARK: - Gestures
     
@@ -509,28 +664,82 @@ struct ConstellationView: View {
                 Text("Constellation View")
                     .font(.headline)
             }
-            
+
             Divider().frame(height: 20)
-            
+
+            TextField("Search bodies", text: $searchQuery)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 160)
+
+            Picker("Type", selection: Binding(
+                get: { engine.focusFilter ?? .sun },
+                set: { value in
+                    engine.focusFilter = value == .sun ? nil : value
+                }
+            )) {
+                Text("All Bodies").tag(CelestialBody.BodyType.sun)
+                ForEach(CelestialBody.BodyType.allCases.filter { $0 != .sun }, id: \.self) { type in
+                    Text(type.rawValue).tag(type)
+                }
+            }
+            .frame(width: 140)
+
             Toggle(isOn: $engine.showOrbits) {
                 Label("Orbits", systemImage: "circle.dashed")
             }
             .toggleStyle(.button)
-            
+
             Toggle(isOn: $engine.showConnections) {
                 Label("Links", systemImage: "link")
             }
             .toggleStyle(.button)
-            
+
+            Toggle(isOn: $showSpatialGrid) {
+                Label("Grid", systemImage: "square.grid.3x3")
+            }
+            .toggleStyle(.button)
+
+            Toggle(isOn: $engine.showTrails) {
+                Label("Trails", systemImage: "sparkles")
+            }
+            .toggleStyle(.button)
+
             Spacer()
-            
+
             HStack(spacing: 8) {
                 Text("Speed:")
                     .font(.caption)
                 Slider(value: $engine.animationSpeed, in: 0...3)
                     .frame(width: 100)
             }
-            
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Connection Threshold")
+                    .font(.caption2)
+                Slider(value: $engine.connectionThreshold, in: 0.4...0.95)
+                    .frame(width: 140)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle("Auto Rotate", isOn: $engine.autoRotate)
+                    .toggleStyle(.switch)
+                    .font(.caption)
+                Slider(value: $engine.autoRotateSpeed, in: 0...1.0) {
+                    Text("Rotate")
+                }
+                .frame(width: 140)
+            }
+
+            Button {
+                withAnimation {
+                    engine.cameraRotation = .zero
+                    engine.cameraZoom = 1.0
+                }
+            } label: {
+                Label("Reset Camera", systemImage: "scope")
+            }
+            .buttonStyle(.bordered)
+
             Text("\(engine.bodies.count) bodies")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -583,6 +792,19 @@ struct ConstellationView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(body.bodyType.rawValue)
+                    .font(.caption)
+            }
+
+            HStack {
+                Text("Connections:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("\(connectedBodies(to: body).count) strong links")
+                    .font(.caption)
+            }
+
+            if let closest = connectedBodies(to: body).first {
+                Text("Closest: \(closest.name)")
                     .font(.caption)
             }
             
