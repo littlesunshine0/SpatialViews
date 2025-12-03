@@ -183,29 +183,34 @@ struct VoronoiTessellationView: View {
             Divider()
             
             GeometryReader { geo in
-                ZStack {
-                    // Stained glass background
-                    stainedGlassBackground
-                    
-                    // Voronoi cells
-                    Canvas { context, size in
-                        drawVoronoiCells(context: context, size: size)
+                TimelineView(.animation) { timeline in
+                    let time = timeline.date.timeIntervalSinceReferenceDate
+
+                    ZStack {
+                        // Stained glass background
+                        stainedGlassBackground
+
+                        // Voronoi cells
+                        Canvas { context, size in
+                            drawVoronoiCells(context: context, size: size, time: time)
+                            rippleOverlay(context: context, time: time)
+                        }
+                        .gesture(tapGesture(in: geo.size))
+
+                        // Labels overlay
+                        if engine.showLabels {
+                            labelsOverlay
+                        }
                     }
-                    .gesture(tapGesture(in: geo.size))
-                    
-                    // Labels overlay
-                    if engine.showLabels {
-                        labelsOverlay
+                    .onAppear {
+                        viewSize = geo.size
+                        engine.loadSampleData()
+                        engine.generateVoronoi(in: geo.size)
                     }
-                }
-                .onAppear {
-                    viewSize = geo.size
-                    engine.loadSampleData()
-                    engine.generateVoronoi(in: geo.size)
-                }
-                .onChange(of: geo.size) { _, newSize in
-                    viewSize = newSize
-                    engine.generateVoronoi(in: newSize)
+                    .onChange(of: geo.size) { _, newSize in
+                        viewSize = newSize
+                        engine.generateVoronoi(in: newSize)
+                    }
                 }
             }
             
@@ -261,23 +266,38 @@ struct VoronoiTessellationView: View {
             case .custom:
                 fillColor = cell.color
             }
-            
+
+            let shimmer = 0.05 * sin(time * 0.9 + Double(cell.center.x + cell.center.y) * 0.02)
+            let breathing = 1 + 0.06 * sin(time * 1.2 + Double(cell.importance) * 4)
+
             let isSelected = engine.selectedCell?.id == cell.id
             let isHovered = engine.hoveredCell?.id == cell.id
-            
+
             // Fill
             context.fill(
                 path,
                 with: .color(fillColor.opacity(isSelected ? 0.9 : (isHovered ? 0.7 : 0.5)))
             )
-            
+
+            context.fill(
+                path,
+                with: .linearGradient(
+                    Gradient(colors: [
+                        fillColor.opacity(0.18 + shimmer),
+                        fillColor.opacity(0.45 * breathing)
+                    ]),
+                    startPoint: cell.center,
+                    endPoint: CGPoint(x: cell.center.x + 40, y: cell.center.y + 40)
+                )
+            )
+
             // Border (stained glass lead)
             context.stroke(
                 path,
                 with: .color(.black.opacity(0.8)),
                 lineWidth: isSelected ? engine.borderThickness + 1 : engine.borderThickness
             )
-            
+
             // Inner glow for selected
             if isSelected {
                 context.stroke(
@@ -294,6 +314,28 @@ struct VoronoiTessellationView: View {
                 )
             }
         }
+    }
+
+    private func rippleOverlay(context: GraphicsContext, time: TimeInterval) {
+        guard let selected = engine.selectedCell else { return }
+        let ripple = 1 + sin(time * 1.4) * 0.4
+        let radius = 14.0 * ripple
+
+        let ringRect = CGRect(
+            x: selected.center.x - radius,
+            y: selected.center.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        )
+
+        var ring = Path(ellipseIn: ringRect)
+        ring = ring.strokedPath(.init(lineWidth: 3, dash: [6, 10], dashPhase: CGFloat(time * 8)))
+
+        context.stroke(
+            ring,
+            with: .color(selected.color.opacity(0.4)),
+            lineWidth: 2
+        )
     }
     
     // MARK: - Labels Overlay

@@ -74,6 +74,16 @@ class ConstellationEngine {
     var showTrails = true
     var animationSpeed: Float = 1.0
     var time: Float = 0
+
+    struct ParallaxStar {
+        let position: CGPoint
+        let size: CGFloat
+        let baseOpacity: Double
+        let twinkleSpeed: Double
+        let parallaxDepth: CGFloat
+    }
+
+    var starfield: [ParallaxStar] = []
     
     var centralSun: CelestialBody? {
         bodies.first { $0.bodyType == .sun }
@@ -103,6 +113,9 @@ class ConstellationEngine {
     }
     
     func loadSampleData() {
+        if starfield.isEmpty {
+            generateStarfield()
+        }
         // Central project sun
         let sun = CelestialBody(
             name: "HIG Project",
@@ -217,6 +230,21 @@ class ConstellationEngine {
             bodies.append(body)
         }
     }
+
+    func generateStarfield(size: CGSize = CGSize(width: 1400, height: 900)) {
+        starfield = (0..<240).map { _ in
+            ParallaxStar(
+                position: CGPoint(
+                    x: CGFloat.random(in: 0...size.width),
+                    y: CGFloat.random(in: 0...size.height)
+                ),
+                size: CGFloat.random(in: 1...3),
+                baseOpacity: Double.random(in: 0.25...0.9),
+                twinkleSpeed: Double.random(in: 0.5...1.5),
+                parallaxDepth: CGFloat.random(in: 0.3...1.2)
+            )
+        }
+    }
 }
 
 // MARK: - Constellation View
@@ -274,8 +302,12 @@ struct ConstellationView: View {
     private var spaceBackground: some View {
         ZStack {
             // Deep space
-            Color.black
-            
+            LinearGradient(
+                colors: [Color.black, Color(red: 0.03, green: 0.02, blue: 0.08)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
             // Nebula clouds
             ForEach(0..<3, id: \.self) { i in
                 Circle()
@@ -297,18 +329,23 @@ struct ConstellationView: View {
                     )
                     .blur(radius: 80)
             }
-            
+
             // Stars
             Canvas { context, size in
-                for _ in 0..<200 {
-                    let x = CGFloat.random(in: 0...size.width)
-                    let y = CGFloat.random(in: 0...size.height)
-                    let starSize = CGFloat.random(in: 1...3)
-                    let opacity = Double.random(in: 0.3...1.0)
-                    
+                if engine.starfield.isEmpty { engine.generateStarfield(size: size) }
+
+                let driftX = sin(Double(engine.time) * 0.15) * 8
+                let driftY = cos(Double(engine.time) * 0.12) * 6
+
+                for star in engine.starfield {
+                    let parallax = 1 + star.parallaxDepth * 0.25
+                    let twinkle = star.baseOpacity + sin(Double(engine.time) * star.twinkleSpeed + Double(star.position.x) * 0.01) * 0.25
+                    let x = star.position.x + CGFloat(driftX) * star.parallaxDepth
+                    let y = star.position.y + CGFloat(driftY) * star.parallaxDepth
+
                     context.fill(
-                        Path(ellipseIn: CGRect(x: x, y: y, width: starSize, height: starSize)),
-                        with: .color(.white.opacity(opacity))
+                        Path(ellipseIn: CGRect(x: x, y: y, width: star.size * parallax, height: star.size * parallax)),
+                        with: .color(.white.opacity(max(0.05, min(1.0, twinkle))))
                     )
                 }
             }
@@ -411,7 +448,33 @@ struct ConstellationView: View {
                 endRadius: glowRadius
             )
         )
-        
+
+        // Orbital motion trail
+        if engine.showTrails && body.bodyType != .sun {
+            let tailPhase = body.orbitPhase + max(0, engine.time - 0.8) * body.orbitSpeed
+            let tailRadius = body.orbitRadius
+            let tailPosition = SIMD3<Float>(
+                cos(tailPhase) * tailRadius,
+                sin(tailPhase * 0.3) * tailRadius * 0.2,
+                sin(tailPhase) * tailRadius
+            )
+
+            let tailScreen = project3D(tailPosition, center: center, scale: scale, rotation: engine.cameraRotation)
+            var trailPath = Path()
+            trailPath.move(to: tailScreen)
+            trailPath.addLine(to: screenPos)
+
+            context.stroke(
+                trailPath,
+                with: .linearGradient(
+                    Gradient(colors: [body.color.opacity(0.05), body.color.opacity(displayOpacity * 0.6)]),
+                    startPoint: tailScreen,
+                    endPoint: screenPos
+                ),
+                lineWidth: size * 0.12
+            )
+        }
+
         // Body
         context.fill(
             Path(ellipseIn: CGRect(
